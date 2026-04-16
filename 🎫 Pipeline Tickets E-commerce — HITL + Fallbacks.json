@@ -1,0 +1,503 @@
+{
+  "name": "🎫 Pipeline Tickets E-commerce — HITL + Fallbacks",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "const ticket = $input.first().json.body;\n\nif (!ticket.customer || !ticket.message) {\n  throw new Error('Ticket inválido: faltan campos customer o message');\n}\n\nconst ticketId = `TK-${Date.now().toString().slice(-6)}`;\n\nreturn [{\n  json: {\n    ticket_id: ticketId,\n    customer: ticket.customer,\n    message: ticket.message,\n    email: ticket.email || 'sin-email@test.com',\n    received_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "14a1f273-71aa-416e-8df0-1b76667fc200",
+      "name": "✅ Validar & Formatear",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -768,
+        -32
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $vars.OPENROUTER_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"google/gemini-2.0-flash-001\",\n  \"temperature\": 0.2,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Sos un clasificador de tickets de soporte e-commerce. Clasificá el mensaje del cliente en UNA categoría y generá una respuesta sugerida.\\n\\nCategorías válidas: envio, pago, devolucion, tecnico, facturacion, otro.\\n\\nRespondé SOLO JSON válido:\\n{\\n  \\\"category\\\": \\\"string\\\",\\n  \\\"confidence\\\": 0.0-1.0,\\n  \\\"suggested_response\\\": \\\"respuesta empática para el cliente\\\",\\n  \\\"is_sensitive\\\": true/false,\\n  \\\"reasoning\\\": \\\"explicación breve\\\"\\n}\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Mensaje del cliente: {{ $json.message }}\"\n    }\n  ]\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "8bfaab79-c464-4439-933f-c30932fae9b2",
+      "name": "🤖 Clasificar con IA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -544,
+        -32
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const ticket = $('✅ Validar & Formatear').first().json;\nconst aiRaw = $input.first().json;\n\nlet classification;\ntry {\n  const content = aiRaw.choices[0].message.content;\n  classification = JSON.parse(content);\n} catch(e) {\n  classification = {\n    category: 'otro',\n    confidence: 0.3,\n    suggested_response: 'Recibimos tu consulta. Un agente te contactará pronto.',\n    is_sensitive: true,\n    reasoning: 'Error parsing IA — fallback activado'\n  };\n}\n\nconst needsHITL = classification.confidence < 0.7 \n  || classification.category === 'devolucion'\n  || classification.category === 'pago';\n\nconst hitlReason = classification.confidence < 0.7 \n  ? `Confianza baja (${(classification.confidence * 100).toFixed(0)}%)`\n  : classification.is_sensitive \n    ? 'Tema sensible'\n    : 'Categoría devolución';\n\nreturn [{\n  json: {\n    ...ticket,\n    category: classification.category,\n    confidence: classification.confidence,\n    suggested_response: classification.suggested_response,\n    is_sensitive: classification.is_sensitive,\n    reasoning: classification.reasoning,\n    needs_hitl: needsHITL,\n    hitl_reason: needsHITL ? hitlReason : null,\n    classified_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "cd272d29-4d15-4b8b-9980-7caa302a41d7",
+      "name": "📋 Parsear Clasificación",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        -32
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "hitl-check",
+              "leftValue": "={{ $json.needs_hitl }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "77de9295-70d4-444f-b1d9-b63b3a6554ac",
+      "name": "🔀 ¿Necesita HITL?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        576,
+        -32
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\n\nreturn [{\n  json: {\n    ...data,\n    decision: 'auto',\n    response_to_send: data.suggested_response,\n    decided_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "f3e7097c-df1c-452f-a049-1b83a83d8fda",
+      "name": "⚡ Ruta Automática",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        -224
+      ]
+    },
+    {
+      "parameters": {
+        "resume": "form",
+        "formTitle": "Revisión de Ticket",
+        "formDescription": "Por favor revise el ticket y seleccione una acción",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Acción",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "approve"
+                  },
+                  {
+                    "option": "edit"
+                  },
+                  {
+                    "option": "reject"
+                  }
+                ]
+              },
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Comentarios"
+            }
+          ]
+        },
+        "options": {
+          "webhookSuffix": ""
+        }
+      },
+      "id": "60c2710e-b6fb-4469-8481-2ef069cdaa8f",
+      "name": "⏳ Wait — Revisión Humana",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        800,
+        64
+      ],
+      "webhookId": "63d0e7b6-8081-4f62-9984-00b7dcd15030"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "timeout-check",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "name": "filter.operator.exists"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "73304186-aebb-4c85-9304-5804810803b5",
+      "name": "🔀 ¿Respondió o Timeout?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1024,
+        64
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const original = $('📋 Parsear Clasificación').first().json;\nconst hitlResponse = $input.first().json;\n\nlet finalResponse = original.suggested_response;\nlet decision = hitlResponse.action;\n\nif (decision === 'edit' && hitlResponse.comments) {\n  finalResponse = hitlResponse.comments;\n} else if (decision === 'reject') {\n  finalResponse = null;\n}\n\nreturn [{\n  json: {\n    ...original,\n    decision: `hitl_${decision}`,\n    response_to_send: finalResponse,\n    decided_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "fbda0550-9f0e-4caf-811a-5164b214fce4",
+      "name": "✅ Operador Respondió",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        -32
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const original = $('📋 Parsear Clasificación').first().json;\n\nreturn [{\n  json: {\n    ...original,\n    decision: 'fallback_timeout',\n    response_to_send: 'Recibimos tu consulta. Un supervisor la está revisando y te contactará a la brevedad.',\n    escalated_to: 'supervisor',\n    decided_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "800c6bcb-3c2e-441f-b5f9-8aac80d1b676",
+      "name": "🔄 Fallback — Escalar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1248,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst receivedAt = new Date(data.received_at);\nconst now = new Date();\nconst latencyMs = now - receivedAt;\n\nreturn [{\n  json: {\n    ticket_id: data.ticket_id,\n    customer: data.customer,\n    category: data.category,\n    confidence: data.confidence,\n    decision: data.decision,\n    hitl_reason: data.hitl_reason || null,\n    response_sent: !!data.response_to_send,\n    escalated_to: data.escalated_to || null,\n    latency_ms: latencyMs,\n    received_at: data.received_at,\n    completed_at: now.toISOString()\n  }\n}];"
+      },
+      "id": "62723e8c-f1eb-49c2-93a7-3045b334cee9",
+      "name": "💾 Registrar Resultado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1472,
+        -32
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ticket-ingreso",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -992,
+        -32
+      ],
+      "id": "5eda3c87-4f58-449c-abb9-fca0c549a9a9",
+      "name": "Webhook",
+      "webhookId": "b0c91626-aeea-4f6e-b6dc-5f57b2b1d083"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst response = data.suggested_response || '';\nconst category = data.category || '';\n\n// Regla 1: Largo mínimo\nconst largoMinimo = response.length > 30;\n\n// Regla 2: Sin promesas falsas\nconst promesasFalsas = /inmediatamente|al instante|ya mismo/i.test(response);\nconst sinPromesasFalsas = !promesasFalsas;\n\n// Regla 3: Tono empático\nconst tonoEmpatico = /hola|lamento|disculp|sentimos/i.test(response);\n\n// Regla 4: Categoría válida\nconst categoriasValidas = ['envio', 'pago', 'devolucion', 'tecnico', 'facturacion', 'otro'];\nconst categoriaValida = categoriasValidas.includes(category);\n\n// Regla 5: Sin datos sensibles (DNI o tarjeta)\nconst dniPattern = /\\b\\d{7,8}\\b/;\nconst tarjetaPattern = /\\b\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}\\b/;\nconst sinDatosSensibles = !dniPattern.test(response) && !tarjetaPattern.test(response);\n\n// Calcular score\nconst details = [\n  { rule: 'largo_minimo', passed: largoMinimo, description: 'Más de 30 caracteres' },\n  { rule: 'sin_promesas_falsas', passed: sinPromesasFalsas, description: 'No contiene promesas inmediatas' },\n  { rule: 'tono_empatico', passed: tonoEmpatico, description: 'Contiene palabras empáticas' },\n  { rule: 'categoria_valida', passed: categoriaValida, description: 'Categoría válida' },\n  { rule: 'sin_datos_sensibles', passed: sinDatosSensibles, description: 'No contiene DNI o tarjeta' }\n];\n\nconst score = details.filter(d => d.passed).length;\nconst total = details.length;\nconst pct = (score / total) * 100;\nconst passed = score >= 4;\n\nreturn [{\n  json: {\n    ...data,\n    eval_rules: {\n      score,\n      total,\n      pct: Math.round(pct),\n      passed,\n      details\n    }\n  }\n}];"
+      },
+      "id": "f1a68c92-e4b0-47a3-87c8-29867437e395",
+      "name": "📏 Eval Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -96,
+        -32
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $vars.OPENROUTER_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"google/gemini-2.0-flash-001\",\n  \"temperature\": 0.1,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Sos un jurado evaluador de respuestas de soporte al cliente. Evaluá la respuesta en 4 criterios de 0 a 10:\\n\\n1. relevancia: ¿La respuesta aborda el problema del cliente?\\n2. empatia: ¿Muestra comprensión y tono humano?\\n3. claridad: ¿Es clara y fácil de entender?\\n4. seguridad: ¿Evita promesas falsas y datos sensibles?\\n\\nRespondé SOLO JSON válido:\\n{\\n  \\\"scores\\\": {\\n    \\\"relevancia\\\": 0-10,\\n    \\\"empatia\\\": 0-10,\\n    \\\"claridad\\\": 0-10,\\n    \\\"seguridad\\\": 0-10\\n  },\\n  \\\"score_total\\\": 0-40,\\n  \\\"aprobado\\\": true/false,\\n  \\\"razon\\\": \\\"explicación breve\\\"\\n}\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Mensaje del cliente: {{ $json.message }}\\n\\nCategoría: {{ $json.category }}\\n\\nRespuesta sugerida: {{ $json.suggested_response }}\"\n    }\n  ]\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "20adba53-4ca0-4894-b0fd-b1eb858b9ca5",
+      "name": "🧑‍⚖️ Eval LLM Jurado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        128,
+        -32
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $('📏 Eval Rules').first().json;\nconst llmRaw = $input.first().json;\n\nlet llmEval;\ntry {\n  const content = llmRaw.choices[0].message.content;\n  llmEval = JSON.parse(content);\n} catch(e) {\n  // Fallback si el LLM falló\n  llmEval = {\n    scores: { relevancia: 0, empatia: 0, claridad: 0, seguridad: 0 },\n    score_total: 0,\n    aprobado: false,\n    razon: 'Error parsing respuesta LLM'\n  };\n}\n\nconst rulesPass = data.eval_rules.passed;\nconst llmPass = llmEval.aprobado;\n\nlet decision;\nlet needsHitl = data.needs_hitl;\nlet hitlReason = data.hitl_reason;\n\nif (rulesPass && llmPass) {\n  decision = 'aprobado';\n} else if (rulesPass && !llmPass) {\n  decision = 'aprobado_con_advertencia';\n} else if (!rulesPass) {\n  decision = 'rechazado_rules';\n  needsHitl = true;\n  hitlReason = `Eval rules falló: ${data.eval_rules.score}/${data.eval_rules.total} reglas pasadas`;\n} else if (!llmPass) {\n  decision = 'rechazado_llm';\n  needsHitl = true;\n  hitlReason = `Eval LLM rechazó: ${llmEval.razon}`;\n}\n\nreturn [{\n  json: {\n    ...data,\n    eval_llm: llmEval,\n    eval_decision: decision,\n    needs_hitl: needsHitl,\n    hitl_reason: hitlReason\n  }\n}];"
+      },
+      "id": "930a1672-e535-4800-9335-0514a5de823d",
+      "name": "📊 Consolidar Evals",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        352,
+        -32
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "✅ Validar & Formatear": {
+      "main": [
+        [
+          {
+            "node": "🤖 Clasificar con IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🤖 Clasificar con IA": {
+      "main": [
+        [
+          {
+            "node": "📋 Parsear Clasificación",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📋 Parsear Clasificación": {
+      "main": [
+        [
+          {
+            "node": "📏 Eval Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔀 ¿Necesita HITL?": {
+      "main": [
+        [
+          {
+            "node": "⏳ Wait — Revisión Humana",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "⚡ Ruta Automática",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "⏳ Wait — Revisión Humana": {
+      "main": [
+        [
+          {
+            "node": "🔀 ¿Respondió o Timeout?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔀 ¿Respondió o Timeout?": {
+      "main": [
+        [
+          {
+            "node": "✅ Operador Respondió",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "🔄 Fallback — Escalar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "⚡ Ruta Automática": {
+      "main": [
+        [
+          {
+            "node": "💾 Registrar Resultado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "✅ Operador Respondió": {
+      "main": [
+        [
+          {
+            "node": "💾 Registrar Resultado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🔄 Fallback — Escalar": {
+      "main": [
+        [
+          {
+            "node": "💾 Registrar Resultado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "💾 Registrar Resultado": {
+      "main": [
+        []
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "✅ Validar & Formatear",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📏 Eval Rules": {
+      "main": [
+        [
+          {
+            "node": "🧑‍⚖️ Eval LLM Jurado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🧑‍⚖️ Eval LLM Jurado": {
+      "main": [
+        [
+          {
+            "node": "📊 Consolidar Evals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📊 Consolidar Evals": {
+      "main": [
+        [
+          {
+            "node": "🔀 ¿Necesita HITL?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "a7f80d45-e785-4265-90b6-ed6011b7e4ee",
+  "meta": {
+    "instanceId": "87a4cb86d288593131ede71dfcf8d54d6c4ddcaa942b5c5ccba01538931324fc"
+  },
+  "id": "2tkO1aPnOyE0sCrV",
+  "tags": [
+    {
+      "updatedAt": "2026-04-07T12:41:58.196Z",
+      "createdAt": "2026-04-07T12:41:58.196Z",
+      "id": "HmryipwZekHzf4Tr",
+      "name": "fallback"
+    },
+    {
+      "updatedAt": "2026-04-07T12:41:58.144Z",
+      "createdAt": "2026-04-07T12:41:58.144Z",
+      "id": "WSoM2s38sfOEX08m",
+      "name": "hitl"
+    },
+    {
+      "updatedAt": "2026-04-07T12:41:58.117Z",
+      "createdAt": "2026-04-07T12:41:58.117Z",
+      "id": "sKoFvmCtFgKghIrE",
+      "name": "demo"
+    }
+  ]
+}
